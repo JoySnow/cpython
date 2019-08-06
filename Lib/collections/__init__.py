@@ -60,6 +60,39 @@ def __getattr__(name):
 
 class _OrderedDictKeysView(_collections_abc.KeysView):
 
+    # JOY: Why adding `__reversed__` for `_OrderedDictKeysView`?
+    #      While `OrderedDict` has its own `__reversed__` already.
+    #      Answer:
+    #      `OrderedDict`.keys() return a `_OrderedDictKeysView(OrderedDict)`.
+    #      This above part is in `OrderedDict`.
+    #      `_OrderedDictKeysView` inherited from `_collections_abc.KeysView`,
+    #      while `KeysView` has no `__reversed__`, so this `__reversed__` is
+    #      added for `reversed()` purpose.
+    #      If not added, it's fine. Just borken with
+    #        >>> class LocalKeysViews(KeysView):
+    #        >>>    pass
+    #        >>> lkv = LocalKeysViews({'x': 1, 'y': 2})
+    #        >>> assert '__reversed__' not in dir(lkv)
+    #        >>> print(lkv)
+    #        >>> for k in lkv:
+    #        >>>     print(k)
+    #        >>> for k in reversed(lkv):
+    #        >>>     print(k)
+    #        LocalKeysViews({'x': 1, 'y': 2})
+    #        x
+    #        y
+    #        ...
+    #        TypeError: 'LocalKeysViews' object is not reversible
+    #      The question is basing on a wrong logic.
+    #
+    #      `OrderedDict` usage example:
+    #        >>> od.keys()
+    #        odict_keys(['s1', 's2', 's3'])
+    #        >>> for k in reversed(od.keys()):
+    #        >>>     print(k)
+    #        >>> for k in od.keys().__reversed__():
+    #        >>>     print(k)
+    # END.
     def __reversed__(self):
         yield from reversed(self._mapping)
 
@@ -106,6 +139,11 @@ class OrderedDict(dict):
         try:
             self.__root
         except AttributeError:
+            # JOY: self.__hardroot is a _Link object.
+            #      self.__root use it's weakref proxy.
+            #      weakref: Used for ref a object, but not counted in for
+            #      Garbage Collection.
+            # END.
             self.__hardroot = _Link()
             self.__root = root = _proxy(self.__hardroot)
             root.prev = root.next = root
@@ -122,15 +160,39 @@ class OrderedDict(dict):
             root = self.__root
             last = root.prev
             link.prev, link.next, link.key = last, root, key
+            # JOY: Why the forward links use hard reference,
+            #       while backward links use weak reference?
+            #      This behavoir is changes in:
+            #       c5c29c0: Use weakrefs for both forward and backward links.
+            #       f7328d0: Improve iteration speed by only proxying back links.
+            #      Answer:
+            #      For c5c29c0, it trying to remove the not-necessary forward
+            #      hard reference. This is okay, cause dict self.__map will
+            #      store the links as value, and reference in a dict is always a
+            #      hard one. So, for the link-list, weak/hard both works.
+            #      For f7328d0, it covert back to still use hard reference for
+            #      forward links. The reason is mentioned in commit-msg, direct
+            #      hard reference could speed up the iteration than wrapped with
+            #      weakref.proxy.
+            # END.
             last.next = link
             root.prev = proxy(link)
         dict_setitem(self, key, value)
+        # JOY: Again: __setitem__, a Syntactic Sugar for container type `[]`.
+        #      `dict_setitem=dict.__setitem__`, this rewriting of __setitem__,
+        #      will actually call dict.__setitem__ at last. :D Nice Example.
+        # END.
 
     def __delitem__(self, key, dict_delitem=dict.__delitem__):
         'od.__delitem__(y) <==> del od[y]'
         # Deleting an existing item uses self.__map to find the link which gets
         # removed by updating the links in the predecessor and successor nodes.
         dict_delitem(self, key)
+        # JOY: this key's LINK is not hard refered in self.__map.
+        #      Only this tmp variable `link` refers it here.
+        #      At the end of the running of this method `__delitem__`,
+        #      link will be garbage-collected first, then LINK. Right?
+        # END.
         link = self.__map.pop(key)
         link_prev = link.prev
         link_next = link.next
@@ -171,6 +233,24 @@ class OrderedDict(dict):
         '''
         if not self:
             raise KeyError('dictionary is empty')
+            # JOY: Why judge with `not self`? self is a `OrderedDict` object,
+            #      how could it be False even it's empty?
+            #      Answer:
+            #      1. As said, the False/True could be controled by `__bool__`
+            #         or `__notzero__`. While not in `dict`.
+            #         Guess: it might controled by some C function of `dict`.
+            #        >>> assert '__bool__' not in dir(dict)     # for >= py3
+            #        >>> assert '__notzero__' not in dir(dict)  # for <  py2
+            #      2. `class OrderedDict(dict)`. And it not redefined such bool
+            #         control method. So, it follow `dict`'s behavior.
+            #        >>> eod = OrderedDict()
+            #        >>> class LocalOrderedDict(OrderedDict):
+            #        >>>     def __bool__(self):
+            #        >>>         return False if self is None else True
+            #        >>> leod =  LocalOrderedDict()
+            #        >>> print(eod, leod, not eod, not leod)
+            #        OrderedDict() LocalOrderedDict() True False
+            # END.
         root = self.__root
         if last:
             link = root.prev
@@ -249,6 +329,9 @@ class OrderedDict(dict):
             result = self[key]
             del self[key]
             return result
+        # JOY: Use `self.__marker` could avoid conflict with `None`.
+        #        >>> assert bool(object()) is True
+        # END.
         if default is self.__marker:
             raise KeyError(key)
         return default
@@ -258,6 +341,9 @@ class OrderedDict(dict):
 
         Return the value for key if key is in the dictionary, else default.
         '''
+        # JOY: why rewrite this `setdefault`? dict has such method. Seems no
+        #      function changes here. ???
+        # END.
         if key in self:
             return self[key]
         self[key] = default
